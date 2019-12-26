@@ -1,22 +1,74 @@
-/*
-Copyright © 2019 NAME HERE <EMAIL ADDRESS>
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 package main
 
-import "github.com/peter-stratton/serrvor/cmd"
+import (
+	"context"
+	"log"
+	"math/rand"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+func errorRoll(threshold int) bool {
+	rand.Seed(time.Now().UnixNano())
+	x := rand.Intn(100)
+	if x <= threshold {
+		return true
+	}
+	return false
+}
+
+func endpointFactory(responseBody string, errorStatusCode, errorFrequency int) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if errorRoll(errorFrequency) {
+			w.WriteHeader(errorStatusCode)
+			w.Write([]byte(responseBody))
+		} else {
+			w.WriteHeader(200)
+			w.Write([]byte("happy path"))
+		}
+	}
+}
 
 func main() {
-  cmd.Execute()
+	endpointPath := "/foo"
+	responseBody := "bad path"
+	errorCode := 404
+	errorFrequency := 50
+
+	router := mux.NewRouter()
+	router.HandleFunc(endpointPath, endpointFactory(responseBody, errorCode, errorFrequency)).Methods("GET")
+
+	srv := &http.Server{
+		Addr:    ":8181",
+		Handler: router,
+	}
+
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %s\n", err)
+		}
+	}()
+	log.Print("Server Started")
+
+	<-done
+	log.Print("Server Stopped")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer func() {
+		// extra handling here
+		cancel()
+	}()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server Shutdown Failed:%+v", err)
+	}
+	log.Print("Server Exited Properly")
 }
